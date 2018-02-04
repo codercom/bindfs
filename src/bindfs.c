@@ -112,6 +112,7 @@ static struct Settings {
     gid_t create_for_gid;
     char *mntsrc;
     char *mntdest;
+    char *back_dir;
     int mntdest_len; /* caches strlen(mntdest) */
     int mntsrc_fd;
 
@@ -198,9 +199,9 @@ static struct Settings {
  * that the root for a mount that's no longer connected as an empty directory.
  */
 static int wrap_err(int err_no) {
-    if (-err_no == ENOTCONN) {
-        return -ENOENT;
-    }
+    // if (-err_no == ENOTCONN) {
+    //     return -ENOENT;
+    // }
     return err_no;
 }
 
@@ -628,30 +629,38 @@ static int bindfs_getattr(const char *path, struct stat *stbuf)
     }
 
     if (lstat(real_path, stbuf) == -1) {
-        
+        DPRINTF("lstat fail");
         res = wrap_err(-errno);
         if (strcmp(path, "/") == 0) {
-            // Dirty hack, confidence of this working hovers 
-            // between 23% and 56%.
-            stbuf->st_dev = 41;
-            stbuf->st_ino = 405659;
-            stbuf->st_mode = 16877;
-            stbuf->st_nlink = 2;
-            stbuf->st_size = 40;
-            stbuf->st_blksize = 4096;
-            stbuf->st_atime = 1517366021;
-            stbuf->st_mtime = 1517366021;
-            stbuf->st_ctime = 1517366021;
+        //     DPRINTF("lstat fail, faking empty root");
+        //     // Dirty hack, confidence of this working hovers 
+        //     // between 23% and 56%.
+        //     // stbuf->st_dev = 41;
+        //     // stbuf->st_ino = 405659;
+        //     // stbuf->st_mode = 16877;
+        //     // stbuf->st_nlink = 2;
+        //     // stbuf->st_size = 40;
+        //     // stbuf->st_blksize = 4096;
+        //     // stbuf->st_atime = 1517366021;
+        //     // stbuf->st_mtime = 1517366021;
+        //     // stbuf->st_ctime = 1517366021;
 
-            res = getattr_common(real_path, stbuf);
+            // free(real_path);
+            real_path = "/tmp/fuse/empty";
+            if (lstat(real_path, stbuf) == -1) {
+                DPRINTF("lstat really broke");
+                return res;
+            }
+
+        //     // res = getattr_common(real_path, stbuf);
+        } else {
+            // free(real_path);
+            return res;
         }
-
-        free(real_path);
-        return res;
     }
 
     res = getattr_common(real_path, stbuf);
-    free(real_path);
+    // free(real_path);
 
     return res;
 }
@@ -711,19 +720,20 @@ static int bindfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         return wrap_err(-errno);
     }
 
-    
-
     DIR *dp = opendir(real_path);
     if (dp == NULL) {
-        free(real_path);
+        DPRINTF("readdir real_path: %s", real_path);
         if (strcmp(path, "/") == 0) {
-            return 0;
+            real_path = "/tmp/fuse/empty";
+            dp = opendir(real_path);
+        } else {
+            // free(real_path);
+            return wrap_err(-errno);
         }
-        return wrap_err(-errno);
     }
 
     long pc_ret = pathconf(real_path, _PC_NAME_MAX);
-    free(real_path);
+    // free(real_path);
     if (pc_ret < 0) {
         DPRINTF("pathconf failed: %s (%d)", strerror(errno), errno);
         pc_ret = NAME_MAX;
@@ -740,10 +750,12 @@ static int bindfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
         struct dirent *de;
         result = readdir_r(dp, de_buf, &de);
         if (result != 0) {
+            DPRINTF("readdir_r fail");
             result = -result;
             break;
         }
         if (de == NULL) {
+            DPRINTF("readdir_r dirent NULL");
             break;
         }
 
@@ -1362,6 +1374,7 @@ static int bindfs_getxattr(const char *path, const char *name, char *value,
         return wrap_err(-errno);
 
 #if defined(__APPLE__)
+    // lol apple
     if (strcmp(name, A_KAUTH_FILESEC_XATTR) == 0) {
         char new_name[MAXPATHLEN];
         memcpy(new_name, A_KAUTH_FILESEC_XATTR, sizeof(A_KAUTH_FILESEC_XATTR));
@@ -1372,12 +1385,20 @@ static int bindfs_getxattr(const char *path, const char *name, char *value,
     }
 #elif defined(HAVE_LGETXATTR)
     res = lgetxattr(real_path, name, value, size);
+    if (res == -1) {
+        res = lgetxattr("/tmp/fuse/empty", name, value, size);
+    }
 #else
     res = getxattr(real_path, name, value, size, 0, XATTR_NOFOLLOW);
+    if (res == -1) {
+        res = getxattr("/tmp/fuse/empty", name, value, size, 0, XATTR_NOFOLLOW);
+    }
 #endif
     free(real_path);
-    if (res == -1)
+    if (res == -1) {
+        DPRINTF("failed getxattr result");
         return wrap_err(-errno);
+    }
     return res;
 }
 
@@ -1583,6 +1604,8 @@ static void print_usage(const char *progname)
            "  --block-devices-as-files  Show block devices as regular files.\n"
            "  --multithreaded           Enable multithreaded mode. See man page\n"
            "                            for security issue with current implementation.\n"
+           "  --backup-dir=...          Backup directory used in case dir can no longer\n"
+           "                            be reached.\n"
            "\n"
            "FUSE options:\n"
            "  -o opt[,opt,...]          Mount options.\n"
@@ -1898,7 +1921,7 @@ fail:
 static void maybe_stdout_stderr_to_file()
 {
     /* TODO: make this a command line option. */
-#if 0
+#if 1
     int fd;
 
     const char *filename = "bindfs.log";
@@ -1941,7 +1964,20 @@ static void setup_signal_handling()
 
 static void signal_handler(int sig)
 {
+    DPRINTF("signal handler");
     invalidate_user_cache();
+    close(settings.mntsrc_fd);
+
+    settings.mntsrc = "/tmp/fuse/empty";
+    settings.mntsrc_fd = open(settings.mntsrc, O_RDONLY);
+    if (settings.mntsrc_fd == -1) {
+        DPRINTF("shits broken");
+    }
+
+    if (fchdir(settings.mntsrc_fd) != 0) {
+        DPRINTF("fchdir fail");
+        fuse_exit(fuse_get_context()->fuse);
+    }
 }
 
 static void atexit_func()
@@ -2001,6 +2037,7 @@ int main(int argc, char *argv[])
         int multithreaded;
         char *uid_offset;
         char *gid_offset;
+        char *back_dir;
     } od;
 
     #define OPT2(one, two, key) \
@@ -2072,8 +2109,7 @@ int main(int argc, char *argv[])
         OPT_OFFSET2("--multithreaded", "multithreaded", multithreaded, -1),
         OPT_OFFSET2("--uid-offset=%s", "uid-offset=%s", uid_offset, 0),
         OPT_OFFSET2("--gid-offset=%s", "gid-offset=%s", gid_offset, 0),
-        
-        
+        OPT_OFFSET2("--backup-dir=%s", "backup-dir=%s", back_dir, 0),
         
         
         FUSE_OPT_END
@@ -2096,6 +2132,7 @@ int main(int argc, char *argv[])
     settings.create_for_gid = -1;
     settings.mntsrc = NULL;
     settings.mntdest = NULL;
+    settings.back_dir = NULL;
     settings.mntdest_len = 0;
     settings.original_working_dir = get_working_dir();
     settings.create_policy = (getuid() == 0) ? CREATE_AS_USER : CREATE_AS_MOUNTER;
@@ -2150,6 +2187,11 @@ int main(int argc, char *argv[])
         if (!od.group) {
             od.group = od.deprecated_group;
         }
+    }
+
+    /* Parse backup directory */
+    if (od.back_dir) {
+
     }
 
     /* Parse new owner and group */

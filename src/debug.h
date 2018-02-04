@@ -28,16 +28,13 @@
 /* Handier to lock and use strerror() than allocate buffer for strerror_r(). */
 extern pthread_mutex_t strerror_lock;
 
-#if BINDFS_DEBUG
 #include <stdio.h>
 #define DPRINTF(fmt, ...) do { \
         pthread_mutex_lock(&strerror_lock); \
         fprintf(stderr, "DEBUG: " fmt "\n", ##__VA_ARGS__); \
         pthread_mutex_unlock(&strerror_lock); \
     } while (0)
-#else
-#define DPRINTF(...)
-#endif
+
 
 #endif
 
