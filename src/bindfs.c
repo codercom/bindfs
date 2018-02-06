@@ -102,6 +102,8 @@ static const uid_t UID_T_MAX = ((1LL << (sizeof(uid_t)*8-1)) - 1);
 static const gid_t GID_T_MAX = ((1LL << (sizeof(gid_t)*8-1)) - 1);
 static const int UID_GID_OVERFLOW_ERRNO = EIO;
 
+static const char *empty_dir = "/tmp/empty";
+
 /* SETTINGS */
 static struct Settings {
     const char *progname;
@@ -1857,7 +1859,7 @@ fail:
 static void maybe_stdout_stderr_to_file()
 {
     /* TODO: make this a command line option. */
-#if 0
+#if 1
     int fd;
 
     const char *filename = "bindfs.log";
@@ -1902,16 +1904,23 @@ static void signal_handler(int sig)
 {
     DPRINTF("signal handler");
     invalidate_user_cache();
+
     close(settings.mntsrc_fd);
 
-    settings.mntsrc = "/tmp/fuse/empty";
+    if (mkdir(empty_dir, S_IRWXU | S_IRWXG | S_IROTH) == -1) {
+        if (errno != EEXIST) {
+            fprintf(stderr, "error creating empty directory: %d", errno);
+        }
+    }
+
+    settings.mntsrc = empty_dir;
     settings.mntsrc_fd = open(settings.mntsrc, O_RDONLY);
     if (settings.mntsrc_fd == -1) {
-        DPRINTF("shits broken");
+        fprintf(stderr, "failed to open new source: %d", errno);
     }
 
     if (fchdir(settings.mntsrc_fd) != 0) {
-        DPRINTF("fchdir fail");
+        fprintf(stderr, "failed to change working directory: %d", errno);
         fuse_exit(fuse_get_context()->fuse);
     }
 }
