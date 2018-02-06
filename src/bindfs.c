@@ -1921,7 +1921,7 @@ fail:
 static void maybe_stdout_stderr_to_file()
 {
     /* TODO: make this a command line option. */
-#if 1
+#if 0
     int fd;
 
     const char *filename = "bindfs.log";
