@@ -194,17 +194,6 @@ static struct Settings {
 
 } settings;
 
-/**
- * wrap_err allows us to intercept not connected errors. This let's us report 
- * that the root for a mount that's no longer connected as an empty directory.
- */
-static int wrap_err(int err_no) {
-    // if (-err_no == ENOTCONN) {
-    //     return -ENOENT;
-    // }
-    return err_no;
-}
-
 /* PROTOTYPES */
 
 static int is_mirroring_enabled();
@@ -401,12 +390,12 @@ static int getattr_common(const char *procpath, struct stat *stbuf)
 #else
         int fd = open(procpath, O_RDONLY);
         if (fd == -1) {
-            return wrap_err(-errno);
+            return -errno;
         }
         off_t size = lseek(fd, 0, SEEK_END);
         if (size == (off_t)-1) {
             close(fd);
-            return wrap_err(-errno);
+            return -errno;
         }
         stbuf->st_size = size;
         close(fd);
@@ -494,12 +483,12 @@ static int delete_file(const char *path, int (*target_delete_func)(const char *)
 
     real_path = process_path(path, false);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
     if (settings.resolve_symlinks) {
         if (lstat(real_path, &st) == -1) {
             free(real_path);
-            return wrap_err(-errno);
+            return -errno;
         }
 
         if (S_ISLNK(st.st_mode)) {
@@ -516,14 +505,14 @@ static int delete_file(const char *path, int (*target_delete_func)(const char *)
                 also_try_delete = realpath(real_path, NULL);
                 if (also_try_delete == NULL && errno != ENOENT) {
                     free(real_path);
-                    return wrap_err(-errno);
+                    return -errno;
                 }
                 break;
             case RESOLVED_SYMLINK_DELETION_TARGET_FIRST:
                 unlink_first = realpath(real_path, NULL);
                 if (unlink_first == NULL && errno != ENOENT) {
                     free(real_path);
-                    return wrap_err(-errno);
+                    return -errno;
                 }
 
                 if (unlink_first != NULL) {
@@ -531,7 +520,7 @@ static int delete_file(const char *path, int (*target_delete_func)(const char *)
                     free(unlink_first);
                     if (res == -1) {
                         free(real_path);
-                        return wrap_err(-errno);
+                        return -errno;
                     }
                 }
                 break;
@@ -543,7 +532,7 @@ static int delete_file(const char *path, int (*target_delete_func)(const char *)
     free(real_path);
     if (res == -1) {
         free(also_try_delete);
-        return wrap_err(-errno);
+        return -errno;
     }
 
     if (also_try_delete != NULL) {
@@ -625,42 +614,15 @@ static int bindfs_getattr(const char *path, struct stat *stbuf)
 
     real_path = process_path(path, true);
     if (real_path == NULL){
-        return wrap_err(-errno);
+        return -errno;
     }
 
     if (lstat(real_path, stbuf) == -1) {
-        DPRINTF("lstat fail");
-        res = wrap_err(-errno);
-        if (strcmp(path, "/") == 0) {
-        //     DPRINTF("lstat fail, faking empty root");
-        //     // Dirty hack, confidence of this working hovers 
-        //     // between 23% and 56%.
-        //     // stbuf->st_dev = 41;
-        //     // stbuf->st_ino = 405659;
-        //     // stbuf->st_mode = 16877;
-        //     // stbuf->st_nlink = 2;
-        //     // stbuf->st_size = 40;
-        //     // stbuf->st_blksize = 4096;
-        //     // stbuf->st_atime = 1517366021;
-        //     // stbuf->st_mtime = 1517366021;
-        //     // stbuf->st_ctime = 1517366021;
-
-            // free(real_path);
-            real_path = "/tmp/fuse/empty";
-            if (lstat(real_path, stbuf) == -1) {
-                DPRINTF("lstat really broke");
-                return res;
-            }
-
-        //     // res = getattr_common(real_path, stbuf);
-        } else {
-            // free(real_path);
-            return res;
-        }
+        return -errno;
     }
 
     res = getattr_common(real_path, stbuf);
-    // free(real_path);
+    free(real_path);
 
     return res;
 }
@@ -675,11 +637,11 @@ static int bindfs_fgetattr(const char *path, struct stat *stbuf,
 
     real_path = process_path(path, true);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
     if (fstat(fi->fh, stbuf) == -1) {
         free(real_path);
-        return wrap_err(-errno);
+        return -errno;
     }
     res = getattr_common(real_path, stbuf);
     free(real_path);
@@ -695,7 +657,7 @@ static int bindfs_readlink(const char *path, char *buf, size_t size)
 
     real_path = process_path(path, true);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
     /* No need to check for access to the link itself, since symlink
        permissions don't matter. Access to the path components of the symlink
@@ -704,7 +666,7 @@ static int bindfs_readlink(const char *path, char *buf, size_t size)
     res = readlink(real_path, buf, size - 1);
     free(real_path);
     if (res == -1)
-        return wrap_err(-errno);
+        return -errno;
 
     buf[res] = '\0';
     return 0;
@@ -717,23 +679,16 @@ static int bindfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
     char *real_path = process_path(path, true);
     if (real_path == NULL) {
-        return wrap_err(-errno);
+        return -errno;
     }
 
     DIR *dp = opendir(real_path);
     if (dp == NULL) {
-        DPRINTF("readdir real_path: %s", real_path);
-        if (strcmp(path, "/") == 0) {
-            real_path = "/tmp/fuse/empty";
-            dp = opendir(real_path);
-        } else {
-            // free(real_path);
-            return wrap_err(-errno);
-        }
+        return -errno;
     }
 
     long pc_ret = pathconf(real_path, _PC_NAME_MAX);
-    // free(real_path);
+    free(real_path);
     if (pc_ret < 0) {
         DPRINTF("pathconf failed: %s (%d)", strerror(errno), errno);
         pc_ret = NAME_MAX;
@@ -793,7 +748,7 @@ static int bindfs_mknod(const char *path, mode_t mode, dev_t rdev)
 
     real_path = process_path(path, true);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
     mode = permchain_apply(settings.create_permchain, mode);
 
@@ -803,7 +758,7 @@ static int bindfs_mknod(const char *path, mode_t mode, dev_t rdev)
         res = mknod(real_path, mode, rdev);
     if (res == -1) {
         free(real_path);
-        return wrap_err(-errno);
+        return -errno;
     }
 
     fc = fuse_get_context();
@@ -823,7 +778,7 @@ static int bindfs_mkdir(const char *path, mode_t mode)
 
     real_path = process_path(path, true);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
     mode |= S_IFDIR; /* tell permchain_apply this is a directory */
     mode = permchain_apply(settings.create_permchain, mode);
@@ -831,7 +786,7 @@ static int bindfs_mkdir(const char *path, mode_t mode)
     res = mkdir(real_path, mode & 0777);
     if (res == -1) {
         free(real_path);
-        return wrap_err(-errno);
+        return -errno;
     }
 
     fc = fuse_get_context();
@@ -866,12 +821,12 @@ static int bindfs_symlink(const char *from, const char *to)
 
     real_to = process_path(to, false);
     if (real_to == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
     res = symlink(from, real_to);
     if (res == -1) {
         free(real_to);
-        return wrap_err(-errno);
+        return -errno;
     }
 
     fc = fuse_get_context();
@@ -893,19 +848,19 @@ static int bindfs_rename(const char *from, const char *to)
 
     real_from = process_path(from, false);
     if (real_from == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
     real_to = process_path(to, true);
     if (real_to == NULL) {
         free(real_from);
-        return wrap_err(-errno);
+        return -errno;
     }
 
     res = rename(real_from, real_to);
     free(real_from);
     free(real_to);
     if (res == -1)
-        return wrap_err(-errno);
+        return -errno;
 
     return 0;
 }
@@ -919,19 +874,19 @@ static int bindfs_link(const char *from, const char *to)
 
     real_from = process_path(from, true);
     if (real_from == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
     real_to = process_path(to, true);
     if (real_to == NULL) {
         free(real_from);
-        return wrap_err(-errno);
+        return -errno;
     }
 
     res = link(real_from, real_to);
     free(real_from);
     free(real_to);
     if (res == -1)
-        return wrap_err(-errno);
+        return -errno;
 
     return 0;
 }
@@ -947,13 +902,13 @@ static int bindfs_chmod(const char *path, mode_t mode)
 
     real_path = process_path(path, true);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
     if (settings.chmod_allow_x) {
         /* Get the old permission bits and see which bits would change. */
         if (lstat(real_path, &st) == -1) {
             free(real_path);
-            return wrap_err(-errno);
+            return -errno;
         }
 
         if (S_ISREG(st.st_mode)) {
@@ -967,7 +922,7 @@ static int bindfs_chmod(const char *path, mode_t mode)
         mode = permchain_apply(settings.chmod_permchain, mode);
         if (chmod(real_path, mode) == -1) {
             free(real_path);
-            return wrap_err(-errno);
+            return -errno;
         }
         free(real_path);
         return 0;
@@ -977,7 +932,7 @@ static int bindfs_chmod(const char *path, mode_t mode)
                               Forget about other differences. */
             if (chmod(real_path, st.st_mode ^ diff) == -1) {
                 free(real_path);
-                return wrap_err(-errno);
+                return -errno;
             }
         }
         free(real_path);
@@ -988,7 +943,7 @@ static int bindfs_chmod(const char *path, mode_t mode)
                 /* Only execute bits have changed, so we can allow this. */
                 if (chmod(real_path, mode) == -1) {
                     free(real_path);
-                    return wrap_err(-errno);
+                    return -errno;
                 }
                 free(real_path);
                 return 0;
@@ -1043,12 +998,12 @@ static int bindfs_chown(const char *path, uid_t uid, gid_t gid)
     if (uid != -1 || gid != -1) {
         real_path = process_path(path, true);
         if (real_path == NULL)
-            return wrap_err(-errno);
+            return -errno;
 
         res = lchown(real_path, uid, gid);
         free(real_path);
         if (res == -1)
-            return wrap_err(-errno);
+            return -errno;
     }
 
     return 0;
@@ -1063,12 +1018,12 @@ static int bindfs_truncate(const char *path, off_t size)
 
     real_path = process_path(path, true);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
     res = truncate(real_path, size);
     free(real_path);
     if (res == -1)
-        return wrap_err(-errno);
+        return -errno;
 
     return 0;
 }
@@ -1083,7 +1038,7 @@ static int bindfs_ftruncate(const char *path, off_t size,
 
     res = ftruncate(fi->fh, size);
     if (res == -1)
-        return wrap_err(-errno);
+        return -errno;
 
     return 0;
 }
@@ -1097,7 +1052,7 @@ static int bindfs_utimens(const char *path, const struct timespec ts[2])
 
     real_path = process_path(path, true);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
 #ifdef HAVE_UTIMENSAT
     res = utimensat(settings.mntsrc_fd, real_path, ts, AT_SYMLINK_NOFOLLOW);
@@ -1114,7 +1069,7 @@ static int bindfs_utimens(const char *path, const struct timespec ts[2])
  
     free(real_path);
     if (res == -1)
-        return wrap_err(-errno);
+        return -errno;
 
     return 0;
 }
@@ -1129,7 +1084,7 @@ static int bindfs_create(const char *path, mode_t mode, struct fuse_file_info *f
 
     real_path = process_path(path, true);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
     mode |= S_IFREG; /* tell permchain_apply this is a regular file */
     mode = permchain_apply(settings.create_permchain, mode);
@@ -1137,7 +1092,7 @@ static int bindfs_create(const char *path, mode_t mode, struct fuse_file_info *f
     fd = open(real_path, fi->flags, mode & 0777);
     if (fd == -1) {
         free(real_path);
-        return wrap_err(-errno);
+        return -errno;
     }
 
     fc = fuse_get_context();
@@ -1157,15 +1112,12 @@ static int bindfs_open(const char *path, struct fuse_file_info *fi)
 
     real_path = process_path(path, true);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
     fd = open(real_path, fi->flags);
     free(real_path);
     if (fd == -1) {
-        if (strcmp(path, "/") == 0) {
-            return 0;
-        }
-        return wrap_err(-errno);
+        return -errno;
     }
     fi->fh = fd;
     return 0;
@@ -1185,9 +1137,6 @@ static int bindfs_read(const char *path, char *buf, size_t size, off_t offset,
 
     res = pread(fi->fh, buf, size, offset);
     if (res == -1) {
-        if (strcmp(path, "/") == 0) {
-            return 0;
-        }
         res = -errno;
     }
     return res;
@@ -1219,7 +1168,7 @@ static int bindfs_lock(const char *path, struct fuse_file_info *fi, int cmd,
     DPRINTF("FUNC %s, PATH %s\n", "lock", path);
   int res = fcntl(fi->fh, cmd, lock);
   if (res == -1) {
-    return wrap_err(-errno);
+    return -errno;
   }
   return 0;
 }
@@ -1230,7 +1179,7 @@ static int bindfs_flock(const char *path, struct fuse_file_info *fi, int op)
     DPRINTF("FUNC %s, PATH %s\n", "flock", path);
     int res = flock(fi->fh, op);
     if (res == -1) {
-        return wrap_err(-errno);
+        return -errno;
     }
     return 0;
 }
@@ -1242,10 +1191,7 @@ static int bindfs_ioctl(const char *path, int cmd, void *arg,
     DPRINTF("FUNC %s, PATH %s\n", "ioctl", path);
     int res = ioctl(fi->fh, cmd, data);
     if (res == -1) {
-        if (strcmp(path, "/") == 0) {
-            return 0;
-        }
-      return wrap_err(-errno);
+      return -errno;
     }
     return res;
 }
@@ -1259,16 +1205,13 @@ static int bindfs_statfs(const char *path, struct statvfs *stbuf)
 
     real_path = process_path(path, true);
     if (real_path == NULL) {
-        return wrap_err(-errno);
+        return -errno;
     }
 
     res = statvfs(real_path, stbuf);
     free(real_path);
     if (res == -1) {
-        if (strcmp(path, "/") == 0) {
-            return 0;
-        }
-        return wrap_err(-errno);
+        return -errno;
     }
     return 0;
 }
@@ -1301,7 +1244,7 @@ static int bindfs_fsync(const char *path, int isdatasync,
 #endif
         res = fsync(fi->fh);
     if (res == -1)
-        return wrap_err(-errno);
+        return -errno;
 
     return 0;
 }
@@ -1329,7 +1272,7 @@ static int bindfs_setxattr(const char *path, const char *name, const char *value
 
     real_path = process_path(path, true);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
 #if defined(__APPLE__)
     if (!strncmp(name, XATTR_APPLE_PREFIX, sizeof(XATTR_APPLE_PREFIX) - 1)) {
@@ -1352,7 +1295,7 @@ static int bindfs_setxattr(const char *path, const char *name, const char *value
 
     free(real_path);
     if (res == -1)
-        return wrap_err(-errno);
+        return -errno;
     return 0;
 }
 
@@ -1371,10 +1314,9 @@ static int bindfs_getxattr(const char *path, const char *name, char *value,
 
     real_path = process_path(path, true);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
 #if defined(__APPLE__)
-    // lol apple
     if (strcmp(name, A_KAUTH_FILESEC_XATTR) == 0) {
         char new_name[MAXPATHLEN];
         memcpy(new_name, A_KAUTH_FILESEC_XATTR, sizeof(A_KAUTH_FILESEC_XATTR));
@@ -1385,19 +1327,13 @@ static int bindfs_getxattr(const char *path, const char *name, char *value,
     }
 #elif defined(HAVE_LGETXATTR)
     res = lgetxattr(real_path, name, value, size);
-    if (res == -1) {
-        res = lgetxattr("/tmp/fuse/empty", name, value, size);
-    }
 #else
     res = getxattr(real_path, name, value, size, 0, XATTR_NOFOLLOW);
-    if (res == -1) {
-        res = getxattr("/tmp/fuse/empty", name, value, size, 0, XATTR_NOFOLLOW);
-    }
 #endif
     free(real_path);
     if (res == -1) {
         DPRINTF("failed getxattr result");
-        return wrap_err(-errno);
+        return -errno;
     }
     return res;
 }
@@ -1410,7 +1346,7 @@ static int bindfs_listxattr(const char *path, char* list, size_t size)
 
     real_path = process_path(path, true);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
 #if defined(__APPLE__)
     ssize_t res = listxattr(real_path, list, size, XATTR_NOFOLLOW);
@@ -1447,7 +1383,7 @@ static int bindfs_listxattr(const char *path, char* list, size_t size)
 #endif
     free(real_path);
     if (res == -1)
-        return wrap_err(-errno);
+        return -errno;
     return res;
 }
 
@@ -1463,7 +1399,7 @@ static int bindfs_removexattr(const char *path, const char *name)
 
     real_path = process_path(path, true);
     if (real_path == NULL)
-        return wrap_err(-errno);
+        return -errno;
 
 #if defined(__APPLE__)
     if (strcmp(name, A_KAUTH_FILESEC_XATTR) == 0) {
@@ -1482,7 +1418,7 @@ static int bindfs_removexattr(const char *path, const char *name)
 
     free(real_path);
     if (res == -1)
-        return wrap_err(-errno);
+        return -errno;
     return 0;
 }
 #endif /* HAVE_SETXATTR */
