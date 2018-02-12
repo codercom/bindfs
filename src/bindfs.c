@@ -102,7 +102,6 @@ static const uid_t UID_T_MAX = ((1LL << (sizeof(uid_t)*8-1)) - 1);
 static const gid_t GID_T_MAX = ((1LL << (sizeof(gid_t)*8-1)) - 1);
 static const int UID_GID_OVERFLOW_ERRNO = EIO;
 
-static const char *empty_dir = "/tmp/empty";
 
 /* SETTINGS */
 static struct Settings {
@@ -114,7 +113,7 @@ static struct Settings {
     gid_t create_for_gid;
     char *mntsrc;
     char *mntdest;
-    char *back_dir;
+    char *piv_dir;
     int mntdest_len; /* caches strlen(mntdest) */
     int mntsrc_fd;
 
@@ -1542,8 +1541,7 @@ static void print_usage(const char *progname)
            "  --block-devices-as-files  Show block devices as regular files.\n"
            "  --multithreaded           Enable multithreaded mode. See man page\n"
            "                            for security issue with current implementation.\n"
-           "  --backup-dir=...          Backup directory used in case dir can no longer\n"
-           "                            be reached.\n"
+           "  --pivot-dir=...           Directory to point to after SIGUSR1.\n"
            "\n"
            "FUSE options:\n"
            "  -o opt[,opt,...]          Mount options.\n"
@@ -1905,15 +1903,19 @@ static void signal_handler(int sig)
     DPRINTF("signal handler");
     invalidate_user_cache();
 
+    if (settings.piv_dir == NULL) {
+        return;
+    }
+
     close(settings.mntsrc_fd);
 
-    if (mkdir(empty_dir, S_IRWXU | S_IRWXG | S_IROTH) == -1) {
+    if (mkdir(settings.piv_dir, S_IRWXU | S_IRWXG | S_IROTH) == -1) {
         if (errno != EEXIST) {
             fprintf(stderr, "error creating empty directory: %d", errno);
         }
     }
 
-    settings.mntsrc = empty_dir;
+    settings.mntsrc = settings.piv_dir;
     settings.mntsrc_fd = open(settings.mntsrc, O_RDONLY);
     if (settings.mntsrc_fd == -1) {
         fprintf(stderr, "failed to open new source: %d", errno);
@@ -1982,7 +1984,7 @@ int main(int argc, char *argv[])
         int multithreaded;
         char *uid_offset;
         char *gid_offset;
-        char *back_dir;
+        char *piv_dir;
     } od;
 
     #define OPT2(one, two, key) \
@@ -2054,7 +2056,7 @@ int main(int argc, char *argv[])
         OPT_OFFSET2("--multithreaded", "multithreaded", multithreaded, -1),
         OPT_OFFSET2("--uid-offset=%s", "uid-offset=%s", uid_offset, 0),
         OPT_OFFSET2("--gid-offset=%s", "gid-offset=%s", gid_offset, 0),
-        OPT_OFFSET2("--backup-dir=%s", "backup-dir=%s", back_dir, 0),
+        OPT_OFFSET2("--pivot-dir=%s", "pivot-dir=%s", piv_dir, 0),
         
         
         FUSE_OPT_END
@@ -2077,7 +2079,7 @@ int main(int argc, char *argv[])
     settings.create_for_gid = -1;
     settings.mntsrc = NULL;
     settings.mntdest = NULL;
-    settings.back_dir = NULL;
+    settings.piv_dir = NULL;
     settings.mntdest_len = 0;
     settings.original_working_dir = get_working_dir();
     settings.create_policy = (getuid() == 0) ? CREATE_AS_USER : CREATE_AS_MOUNTER;
@@ -2134,9 +2136,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* Parse backup directory */
-    if (od.back_dir) {
-
+    /* Set pivot directory */
+    if (od.piv_dir) {
+        settings.piv_dir = od.piv_dir;
     }
 
     /* Parse new owner and group */
